@@ -190,7 +190,7 @@ data_limit = st.sidebar.number_input(
     "ESAs per license area",
     min_value=0,
     max_value=10000,
-    value=500,
+    value=5,
     step=100,
     help="Number of ESAs to load per selected license area (0 for unlimited). Higher values may take longer to load.",
 )
