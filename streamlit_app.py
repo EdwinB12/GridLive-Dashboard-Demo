@@ -31,7 +31,38 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # Title
-st.title("⚡ GridLive API Dashboard")
+col_title, col_links = st.columns([3, 1])
+with col_title:
+    st.title("⚡ GridLive API Dashboard")
+with col_links:
+    st.markdown(
+        """
+        <div style="margin-top: 20px; text-align: right;">
+            <a href="https://sites.google.com/sheffield.ac.uk/gridlive/home?authuser=0" target="_blank" style="margin-right: 15px; text-decoration: none;">
+                🌐 GridLive Website
+            </a>
+            <a href="https://api.gridlive.shef.ac.uk/docs#" target="_blank" style="text-decoration: none;">
+                📚 API Docs
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+st.markdown(
+    """
+    <div>
+        <span style="background-color: #ff4b4b; color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; font-weight: bold;">
+            ALPHA VERSION
+        </span>
+        <span style="margin-left: 10px; font-size: 14px;">
+            This app is currently experimental. Expect it to change without warning and things not to work.
+            Please feel free to email me at <a href="mailto:w.e.brown@sheffield.ac.uk">w.e.brown@sheffield.ac.uk</a> with any feedback or questions.
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # Sidebar controls
 st.sidebar.header("Settings")
