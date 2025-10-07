@@ -72,23 +72,23 @@ if mode == "License Area":
         selected_license_areas = None
         st.sidebar.warning("Could not load license areas")
 
-    # Number of ESAs per license area limit
+    # Number of substations per license area limit
     data_limit = st.sidebar.number_input(
-        "ESAs per license area",
+        "Substations per license area",
         min_value=0,
         max_value=10000,
         value=5,
         step=100,
-        help="Number of ESAs to load per selected license area (0 for unlimited). Higher values may take longer to load.",
+        help="Number of substations to load per selected license area (0 for unlimited). Higher values may take longer to load.",
     )
 
     # Warning for high limits with "All" selected
     if selected_license_area == "All" and data_limit > 100:
         st.sidebar.warning(
             "⚠️ **Performance Warning**\n\n"
-            f"Loading {data_limit} ESAs per license area with 'All' selected may cause the app to struggle.\n\n"
+            f"Loading {data_limit} substations per license area with 'All' selected may cause the app to struggle.\n\n"
             "**Recommendation:** Either:\n"
-            "- Reduce ESAs per area to ≤100, or\n"
+            "- Reduce substations per area to ≤100, or\n"
             "- Select a specific license area"
         )
 
