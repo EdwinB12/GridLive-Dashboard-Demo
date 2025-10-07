@@ -132,6 +132,46 @@ def create_substation_map(
             fillOpacity=0.7,
         ).add_to(m)
 
+    # Add legend/colorbar
+    if show_all_areas:
+        # Create HTML legend for license areas
+        legend_html = '''
+        <div style="position: fixed;
+                    bottom: 50px; left: 50px; width: 150px;
+                    background-color: white; z-index:9999; font-size:11px;
+                    border:1px solid grey; border-radius: 3px; padding: 6px">
+        <p style="margin: 0 0 6px 0; font-weight: bold;">License Areas</p>
+        '''
+        for area, color in sorted(color_map.items()):
+            legend_html += f'''
+            <p style="margin: 3px 0;">
+                <i style="background:{color}; width: 12px; height: 12px;
+                   display: inline-block; border: 1px solid #000; opacity: 0.7;"></i>
+                {area}
+            </p>
+            '''
+        legend_html += '</div>'
+        m.get_root().html.add_child(folium.Element(legend_html))
+    else:
+        # Create colorbar for continuous feeder scale
+        colorbar_html = f'''
+        <div style="position: fixed;
+                    bottom: 50px; left: 50px; width: 150px;
+                    background-color: white; z-index:9999; font-size:11px;
+                    border:1px solid grey; border-radius: 3px; padding: 6px">
+        <p style="margin: 0 0 6px 0; font-weight: bold;">Number of Feeders</p>
+        <div style="background: linear-gradient(to right,
+                    rgb(0,104,55), rgb(166,217,106), rgb(255,255,191),
+                    rgb(253,174,97), rgb(165,0,38));
+                    height: 15px; width: 100%; border: 1px solid #000;"></div>
+        <div style="display: flex; justify-content: space-between; margin-top: 3px;">
+            <span>{int(min_feeders)}</span>
+            <span>{int(max_feeders)}</span>
+        </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(colorbar_html))
+
     return m
 
 
@@ -151,8 +191,8 @@ def create_smart_meter_plot(
     Returns:
         plotly.graph_objects.Figure
     """
-    # Remove any values over 10 million (likely data errors)
-    combined_data = combined_data[combined_data[y_column] <= 10_000_000].copy()
+    # Remove any values over 1 million (likely data errors)
+    combined_data = combined_data[combined_data[y_column] <= 1_000_000].copy()
 
     # Sort data by timestamp
     combined_data = combined_data.sort_values(by="data_timestamp")

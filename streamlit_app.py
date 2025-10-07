@@ -165,8 +165,11 @@ if not metadata_df.empty:
 
                 if need_to_fetch:
                     # Fetch smart meter data for all ESAs
-                    with st.spinner("Fetching smart meter data..."):
+                    with st.spinner(
+                        "Fetching smart meter data (max 10 lv feeders)..."
+                    ):
                         all_data = []
+                        count = 0
                         for _, esa_row in substation_esas.iterrows():
                             esa_id = esa_row["esa_id"]
                             lv_feeder_id = esa_row["lv_feeder_id"]
@@ -178,6 +181,9 @@ if not metadata_df.empty:
                             if not df_smart.empty:
                                 df_smart["lv_feeder_id"] = lv_feeder_id
                                 all_data.append(df_smart)
+                            count += 1
+                            if count >= 10:  # Limit to 10 feeders
+                                break
 
                         # Cache the result
                         st.session_state.last_clicked_substation = substation_id
