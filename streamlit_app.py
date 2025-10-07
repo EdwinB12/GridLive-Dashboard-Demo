@@ -129,15 +129,12 @@ if not metadata_df.empty:
                     "secondary_substation_name"
                 ]
 
-                st.write(f"**Selected Substation:** {substation_name}")
-                st.write(f"**Substation ID:** {substation_id}")
-
                 # Get all ESAs for this substation
                 substation_esas = metadata_df[
                     metadata_df["secondary_substation_id"] == substation_id
                 ]
 
-                st.write(f"**Number of LV Feeders:** {len(substation_esas)}")
+                st.write(f"**Selected Substation:** {substation_name} | **Substation ID:** {substation_id} | **Number of LV Feeders:** {len(substation_esas)}")
 
                 # Date range selector
                 col_date1, col_date2 = st.columns(2)
