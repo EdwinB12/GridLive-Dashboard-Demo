@@ -23,7 +23,9 @@ def get_color_for_license_area(license_area: str, color_map: dict) -> str:
     return color_map.get(license_area, "gray")
 
 
-def get_color_for_feeders(num_feeders: int, min_feeders: int, max_feeders: int) -> str:
+def get_color_for_feeders(
+    num_feeders: int, min_feeders: int, max_feeders: int
+) -> str:
     """
     Get a color based on the number of feeders using a continuous color scale.
 
@@ -43,7 +45,7 @@ def get_color_for_feeders(num_feeders: int, min_feeders: int, max_feeders: int) 
     normalized = (num_feeders - min_feeders) / (max_feeders - min_feeders)
 
     # Use RdYlGn_r colormap (green for low, yellow for mid, red for high)
-    colormap = cm.get_cmap('RdYlGn_r')
+    colormap = cm.get_cmap("RdYlGn_r")
     rgba = colormap(normalized)
 
     # Convert to hex color
@@ -109,7 +111,9 @@ def create_substation_map(
         if show_all_areas:
             color = get_color_for_license_area(row.license_area_name, color_map)
         else:
-            color = get_color_for_feeders(row.number_of_feeders, min_feeders, max_feeders)
+            color = get_color_for_feeders(
+                row.number_of_feeders, min_feeders, max_feeders
+            )
 
         folium.CircleMarker(
             location=[row.latitude, row.longitude],
@@ -132,7 +136,9 @@ def create_substation_map(
 
 
 def create_smart_meter_plot(
-    combined_data: pd.DataFrame, substation_name: str
+    combined_data: pd.DataFrame,
+    substation_name: str,
+    y_column: str = "active_total_consumption_import",
 ) -> px.line:
     """
     Create a plotly line plot for smart meter data.
@@ -140,27 +146,52 @@ def create_smart_meter_plot(
     Args:
         combined_data: DataFrame with smart meter data
         substation_name: Name of the substation for the title
+        y_column: Column name to plot on y-axis (default: "active_total_consumption_import")
 
     Returns:
         plotly.graph_objects.Figure
     """
+    # Create readable label from column name
+    y_label = y_column.replace("_", " ").title()
+
+    # Add "Wh" unit if column ends with "import"
+    if y_column.endswith("import"):
+        y_label += " (Wh)"
+
+    # Calculate max value for active_total_consumption_import
+    max_value = None
+    title = f"Smart Meter Values for Substation: {substation_name}"
+    if y_column == "active_total_consumption_import":
+        max_value = combined_data[y_column].max()
+        title += f"<br><sub>Maximum Consumption: {max_value:.2f} Wh</sub>"
+
     fig = px.line(
         combined_data,
         x="data_timestamp",
-        y="active_total_consumption_import",
+        y=y_column,
         color="lv_feeder_id",
-        title=f"Smart Meter Values for Substation: {substation_name}",
+        title=title,
         labels={
             "data_timestamp": "Timestamp",
-            "active_total_consumption_import": "Active Total Consumption Import (Wh)",
+            y_column: y_label,
             "lv_feeder_id": "LV Feeder ID",
         },
         height=500,
     )
 
+    # Add horizontal dashed red line at max value for active_total_consumption_import
+    if y_column == "active_total_consumption_import" and max_value is not None:
+        fig.add_hline(
+            y=max_value,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Max: {max_value:.2f} Wh",
+            annotation_position="top",
+        )
+
     fig.update_layout(
         xaxis_title="Timestamp",
-        yaxis_title="Active Total Consumption Import (Wh)",
+        yaxis_title=y_label,
         legend_title="LV Feeder ID",
         hovermode="x unified",
     )

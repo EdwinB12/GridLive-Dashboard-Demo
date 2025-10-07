@@ -201,11 +201,34 @@ if not metadata_df.empty:
                             combined_data["data_timestamp"]
                         )
 
-                        # Create and display the plot
-                        fig = create_smart_meter_plot(
-                            combined_data, cached_substation_name
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        # Get available columns for plotting (exclude esa_id and data_timestamp)
+                        exclude_columns = ["esa_id", "data_timestamp", "lv_feeder_id"]
+                        available_columns = [
+                            col
+                            for col in combined_data.columns
+                            if col not in exclude_columns
+                        ]
+
+                        # Column selector dropdown
+                        if available_columns:
+                            default_column = (
+                                "active_total_consumption_import"
+                                if "active_total_consumption_import" in available_columns
+                                else available_columns[0]
+                            )
+                            selected_column = st.selectbox(
+                                "Select data to plot:",
+                                options=available_columns,
+                                index=available_columns.index(default_column),
+                            )
+
+                            # Create and display the plot
+                            fig = create_smart_meter_plot(
+                                combined_data, cached_substation_name, selected_column
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning("No plottable columns available in the data.")
 
                     else:
                         st.warning(
