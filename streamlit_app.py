@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import folium
 from streamlit_folium import st_folium
 from datetime import datetime, timedelta
 
@@ -8,15 +9,26 @@ from utils import (
     load_api_key,
     fetch_license_areas,
     fetch_esa_metadata,
+    fetch_esa_metadata_near_grid,
     fetch_smart_meter_data,
     process_esa_metadata,
+    latlon_to_grid_reference,
 )
 
 # Import plotting functions
-from plotting import create_substation_map, create_smart_meter_plot
+from plotting import create_substation_map, create_smart_meter_plot, create_map_with_radius_circle
 
 # Page configuration
 st.set_page_config(page_title="GridLive API Dashboard", page_icon="⚡", layout="wide")
+
+# Remove top padding
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
 # Title
 st.title("⚡ GridLive API Dashboard")
@@ -27,80 +39,206 @@ st.sidebar.header("Settings")
 # Load API key
 API_KEY = load_api_key()
 
+# Mode selection
+mode = st.sidebar.radio(
+    "Selection Mode",
+    options=["Map Click", "License Area"],
+    index=0,
+    help="Choose how to select substations: by clicking on the map or by License Area",
+)
+
 # Fetch available license areas
 AVAILABLE_LICENSE_AREAS = fetch_license_areas()
 
-# Desigining Button on sidebar
-if AVAILABLE_LICENSE_AREAS:
-    # License area multi-select with "All" option
-    license_area_options = ["All"] + AVAILABLE_LICENSE_AREAS
-    selected_license_area = st.sidebar.selectbox(
-        "Select License Area",
-        options=license_area_options,
-        index=0,
-        help="Select a license area to filter substations. Select 'All' to show all areas.",
+# Mode-specific controls
+if mode == "License Area":
+    # Desigining Button on sidebar
+    if AVAILABLE_LICENSE_AREAS:
+        # License area multi-select with "All" option
+        license_area_options = ["All"] + AVAILABLE_LICENSE_AREAS
+        selected_license_area = st.sidebar.selectbox(
+            "Select License Area",
+            options=license_area_options,
+            index=0,
+            help="Select a license area to filter substations. Select 'All' to show all areas.",
+        )
+
+        # Convert selection to list format for backwards compatibility
+        if selected_license_area == "All":
+            selected_license_areas = AVAILABLE_LICENSE_AREAS
+        else:
+            selected_license_areas = [selected_license_area]
+    else:
+        selected_license_areas = None
+        st.sidebar.warning("Could not load license areas")
+
+    # Number of ESAs per license area limit
+    data_limit = st.sidebar.number_input(
+        "ESAs per license area",
+        min_value=0,
+        max_value=10000,
+        value=5,
+        step=100,
+        help="Number of ESAs to load per selected license area (0 for unlimited). Higher values may take longer to load.",
     )
 
-    # Convert selection to list format for backwards compatibility
-    if selected_license_area == "All":
-        selected_license_areas = AVAILABLE_LICENSE_AREAS
-    else:
-        selected_license_areas = [selected_license_area]
+    # Warning for high limits with "All" selected
+    if selected_license_area == "All" and data_limit > 100:
+        st.sidebar.warning(
+            "⚠️ **Performance Warning**\n\n"
+            f"Loading {data_limit} ESAs per license area with 'All' selected may cause the app to struggle.\n\n"
+            "**Recommendation:** Either:\n"
+            "- Reduce ESAs per area to ≤100, or\n"
+            "- Select a specific license area"
+        )
+
+    # Convert 0 to None for unlimited
+    limit_value = None if data_limit == 0 else data_limit
 else:
+    # Map Click mode
     selected_license_areas = None
-    st.sidebar.warning("Could not load license areas")
+    limit_value = None
 
-# Number of ESAs per license area limit
-data_limit = st.sidebar.number_input(
-    "ESAs per license area",
-    min_value=0,
-    max_value=10000,
-    value=5,
-    step=100,
-    help="Number of ESAs to load per selected license area (0 for unlimited). Higher values may take longer to load.",
-)
-
-# Convert 0 to None for unlimited
-limit_value = None if data_limit == 0 else data_limit
-
-# Fetch data
-with st.spinner("Fetching metadata from GridLive API..."):
-    metadata_df = fetch_esa_metadata(
-        limit=limit_value,
-        license_areas=selected_license_areas,
+    # Radius selection
+    radius = st.sidebar.number_input(
+        "Search Radius (meters)",
+        min_value=0,
+        max_value=100000,
+        value=10000,
+        step=1000,
+        help="Radius in meters to search around the clicked point (max 100,000m)",
     )
 
-if not metadata_df.empty:
-    # Calculate statistics
-    num_unique_substations = metadata_df["secondary_substation_id"].nunique()
-    num_esas = len(metadata_df)
+    st.sidebar.info(
+        "Click on the map to select a location and load nearby substations"
+    )
 
-    # Show selected license area info
-    if len(selected_license_areas) > 1:
-        st.sidebar.info("**Showing all license areas**")
+# Initialize session state for map click mode
+if "map_click_location" not in st.session_state:
+    st.session_state.map_click_location = None
+if "map_click_grid_ref" not in st.session_state:
+    st.session_state.map_click_grid_ref = None
+
+# Fetch data based on mode
+metadata_df = pd.DataFrame()
+
+if mode == "License Area":
+    # Fetch data using license area
+    with st.spinner("Fetching metadata from GridLive API..."):
+        metadata_df = fetch_esa_metadata(
+            limit=limit_value,
+            license_areas=selected_license_areas,
+        )
+else:
+    # Map Click mode - only fetch if a location has been clicked
+    if st.session_state.map_click_location is not None:
+        grid_ref = st.session_state.map_click_grid_ref
+        with st.spinner(
+            f"Fetching substations near {grid_ref} within {radius}m radius..."
+        ):
+            metadata_df = fetch_esa_metadata_near_grid(
+                grid_reference=grid_ref,
+                radius=radius,
+            )
+
+# Create two-column layout
+col1, col2 = st.columns([1, 1])
+
+# Variable to hold locations data
+locations_df = pd.DataFrame()
+map_data = None
+
+with col1:
+    st.subheader("UK Substation Locations")
+
+    if mode == "License Area":
+        st.write("Choose a license area and a number of substations to show.")
     else:
-        st.sidebar.info(f"**Selected area:** {selected_license_areas[0]}")
+        st.write(
+            "Click on the map to select all substations within a circle with a set radius (left handside)"
+        )
 
-    # Convert coordinates
-    with st.spinner("Converting coordinates..."):
-        locations_df = process_esa_metadata(metadata_df)
+    # Create initial map if in Map Click mode or if data is available
+    if mode == "Map Click":
+        # Show empty map for clicking or map with substations
+        if st.session_state.map_click_location is not None:
+            # User has clicked - show map with radius circle centered on click
+            click_lat, click_lon = st.session_state.map_click_location
 
-    st.sidebar.success(f"Loaded {len(locations_df)} substations")
+            if not metadata_df.empty:
+                # Show map with loaded substations
+                locations_df = process_esa_metadata(metadata_df)
+                st.sidebar.success(f"Loaded {len(locations_df)} substations")
+                m = create_map_with_radius_circle(
+                    click_lat, click_lon, radius, locations_df
+                )
+            else:
+                # Show map with just the click location and radius circle
+                m = create_map_with_radius_circle(
+                    click_lat, click_lon, radius, None
+                )
+        else:
+            # No click yet - show empty UK map
+            st.info("Please click on the map to select a location")
+            m = folium.Map(
+                location=[54.5, -2.0],  # Center of UK
+                zoom_start=6,
+                tiles="OpenStreetMap",
+            )
 
-    # Create two-column layout
-    col1, col2 = st.columns([1, 1])
+        # Display map and capture click data
+        map_data = st_folium(m, width=700, height=600, key="map_click_mode")
 
-    with col1:
-        st.subheader("UK Substation Locations")
-        st.write("Click on a substation to view smart meter data")
+        # Display click information
+        if st.session_state.map_click_location is not None:
+            click_lat, click_lon = st.session_state.map_click_location
+            st.write("**Click Location:**")
+            st.write(f"Latitude: {click_lat:.6f}, Longitude: {click_lon:.6f}")
+            st.write(f"Grid Reference: {st.session_state.map_click_grid_ref}")
+            st.write(f"Search Radius: {radius} meters")
+
+        # Handle map clicks in Map Click mode
+        if map_data and map_data.get("last_clicked"):
+            clicked_lat = map_data["last_clicked"]["lat"]
+            clicked_lon = map_data["last_clicked"]["lng"]
+
+            # Check if this is a new click (not a substation marker)
+            is_new_location = (
+                st.session_state.map_click_location is None
+                or abs(clicked_lat - st.session_state.map_click_location[0]) > 0.001
+                or abs(clicked_lon - st.session_state.map_click_location[1]) > 0.001
+            )
+
+            if is_new_location:
+                # Convert to grid reference
+                grid_ref = latlon_to_grid_reference(clicked_lat, clicked_lon)
+                st.session_state.map_click_location = (clicked_lat, clicked_lon)
+                st.session_state.map_click_grid_ref = grid_ref
+                st.rerun()
+
+    elif not metadata_df.empty:
+        # License Area mode with data
+        # Show selected license area info
+        if selected_license_areas and len(selected_license_areas) > 1:
+            st.sidebar.info("**Showing all license areas**")
+        elif selected_license_areas:
+            st.sidebar.info(f"**Selected area:** {selected_license_areas[0]}")
+
+        # Convert coordinates
+        with st.spinner("Converting coordinates..."):
+            locations_df = process_esa_metadata(metadata_df)
+
+        st.sidebar.success(f"Loaded {len(locations_df)} substations")
 
         # Create map with color coding based on selection
-        show_all_areas = len(selected_license_areas) > 1
+        show_all_areas = selected_license_areas and len(selected_license_areas) > 1
         m = create_substation_map(locations_df, show_all_areas=show_all_areas)
 
         # Display map and capture click data
         map_data = st_folium(m, width=700, height=600)
 
+# Smart meter data section
+if not metadata_df.empty and not locations_df.empty:
     with col2:
         st.subheader("Smart Meter Data")
 
@@ -134,7 +272,9 @@ if not metadata_df.empty:
                     metadata_df["secondary_substation_id"] == substation_id
                 ]
 
-                st.write(f"**Selected Substation:** {substation_name} | **Substation ID:** {substation_id} | **Number of LV Feeders:** {len(substation_esas)}")
+                st.write(
+                    f"**Selected Substation:** {substation_name} | **Substation ID:** {substation_id} | **Number of LV Feeders:** {len(substation_esas)}"
+                )
 
                 # Date range selector
                 col_date1, col_date2 = st.columns(2)
@@ -244,6 +384,6 @@ if not metadata_df.empty:
             st.info(
                 "Click on a substation marker on the map to view its smart meter data."
             )
-
-else:
-    st.error("No data available. Please check the API connection.")
+elif mode == "License Area":
+    with col2:
+        st.error("No data available. Please check the API connection.")
