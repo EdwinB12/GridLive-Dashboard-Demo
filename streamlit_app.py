@@ -37,7 +37,7 @@ with col_title:
 with col_links:
     st.markdown(
         """
-        <div style="margin-top: 20px; text-align: right;">
+        <div style="margin-top: 35px; text-align: right;">
             <a href="https://sites.google.com/sheffield.ac.uk/gridlive/home?authuser=0" target="_blank" style="margin-right: 15px; text-decoration: none;">
                 🌐 GridLive Website
             </a>
