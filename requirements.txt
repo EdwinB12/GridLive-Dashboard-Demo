@@ -5,3 +5,5 @@ folium
 streamlit-folium
 pyproj
 plotly
+geopandas
+matplotlib

@@ -1,11 +1,14 @@
 """
 Utility functions for GridLive API Dashboard
 """
+
 import streamlit as st
 import requests
 import pandas as pd
+import geopandas as gpd
 from pyproj import Transformer
 from datetime import datetime, timedelta
+import time
 
 
 # API Configuration
@@ -57,16 +60,25 @@ def fetch_esa_metadata(limit=None, license_areas=None):
     """
     all_data = []
 
+    start = time.time()
+
     if license_areas and len(license_areas) > 0:
         # Fetch data for each selected license area
         for license_area in license_areas:
+            print(f"Fetching data for license area: {license_area}")
             url = f"{BASE_URL}/esa_metadata/license_area/{license_area}"
+
             params = {}
             if limit:
                 params["limit"] = limit
 
             try:
+                start_of_api_call = time.time()
                 response = requests.get(url, params=params)
+                end_of_api_call = time.time()
+                print(
+                    f"API call duration for {license_area}: {end_of_api_call - start_of_api_call:.2f} seconds"
+                )
                 response.raise_for_status()
                 data = response.json()
                 all_data.extend(data)
@@ -74,6 +86,10 @@ def fetch_esa_metadata(limit=None, license_areas=None):
                 st.error(f"Error fetching data for {license_area}: {str(e)}")
 
         if all_data:
+            end = time.time()
+            st.success(
+                f"Fetched {len(all_data)} records in {end - start:.2f} seconds"
+            )
             return pd.DataFrame(all_data)
         else:
             return pd.DataFrame()
@@ -152,3 +168,28 @@ def fetch_smart_meter_data(api_key, esa_id, start_datetime=None, end_datetime=No
     except Exception as e:
         st.error(f"Error fetching smart meter data for ESA {esa_id}: {str(e)}")
         return pd.DataFrame()
+
+
+def process_esa_metadata(metadata_df: pd.DataFrame) -> pd.DataFrame:
+    # Groupby secondary_substation_id and get number of rows
+    metadata_df["number_of_feeders"] = metadata_df.groupby("secondary_substation_id")[
+        "secondary_substation_id"
+    ].transform("count")
+
+    # Create display dataframe with unique substations
+    locations_df = metadata_df.drop_duplicates(subset=["secondary_substation_id"])
+
+    # Use geopandas for efficient coordinate conversion from EPSG:27700 to EPSG:4326
+    gdf = gpd.GeoDataFrame(
+        locations_df,
+        geometry=gpd.points_from_xy(
+            locations_df["esa_location_eastings"],
+            locations_df["esa_location_northings"],
+        ),
+        crs="EPSG:27700",
+    )
+    gdf = gdf.to_crs("EPSG:4326")
+    locations_df["longitude"] = gdf.geometry.x
+    locations_df["latitude"] = gdf.geometry.y
+
+    return locations_df

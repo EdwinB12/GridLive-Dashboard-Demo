@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
-import folium
 from streamlit_folium import st_folium
-import plotly.express as px
 from datetime import datetime, timedelta
 
 # Import utility functions
@@ -10,9 +8,12 @@ from utils import (
     load_api_key,
     fetch_license_areas,
     fetch_esa_metadata,
-    convert_coords_to_latlon,
     fetch_smart_meter_data,
+    process_esa_metadata,
 )
+
+# Import plotting functions
+from plotting import create_substation_map, create_smart_meter_plot
 
 # Page configuration
 st.set_page_config(page_title="GridLive API Dashboard", page_icon="⚡", layout="wide")
@@ -20,26 +21,33 @@ st.set_page_config(page_title="GridLive API Dashboard", page_icon="⚡", layout=
 # Title
 st.title("⚡ GridLive API Dashboard")
 
-# Load API key
-API_KEY = load_api_key()
-
-
 # Sidebar controls
 st.sidebar.header("Settings")
 
-# Fetch available license areas
-available_license_areas = fetch_license_areas()
+# Load API key
+API_KEY = load_api_key()
 
-if available_license_areas:
-    # License area multi-select
-    selected_license_areas = st.sidebar.multiselect(
-        "Select License Areas",
-        options=available_license_areas,
-        default=[],
-        help="Select one or more license areas to filter substations. Leave empty to show all.",
+# Fetch available license areas
+AVAILABLE_LICENSE_AREAS = fetch_license_areas()
+
+# Desigining Button on sidebar
+if AVAILABLE_LICENSE_AREAS:
+    # License area multi-select with "All" option
+    license_area_options = ["All"] + AVAILABLE_LICENSE_AREAS
+    selected_license_area = st.sidebar.selectbox(
+        "Select License Area",
+        options=license_area_options,
+        index=0,
+        help="Select a license area to filter substations. Select 'All' to show all areas.",
     )
+
+    # Convert selection to list format for backwards compatibility
+    if selected_license_area == "All":
+        selected_license_areas = AVAILABLE_LICENSE_AREAS
+    else:
+        selected_license_areas = [selected_license_area]
 else:
-    selected_license_areas = []
+    selected_license_areas = None
     st.sidebar.warning("Could not load license areas")
 
 # Number of ESAs per license area limit
@@ -56,10 +64,10 @@ data_limit = st.sidebar.number_input(
 limit_value = None if data_limit == 0 else data_limit
 
 # Fetch data
-with st.spinner("Fetching data from GridLive API..."):
+with st.spinner("Fetching metadata from GridLive API..."):
     metadata_df = fetch_esa_metadata(
         limit=limit_value,
-        license_areas=selected_license_areas if selected_license_areas else None,
+        license_areas=selected_license_areas,
     )
 
 if not metadata_df.empty:
@@ -67,34 +75,17 @@ if not metadata_df.empty:
     num_unique_substations = metadata_df["secondary_substation_id"].nunique()
     num_esas = len(metadata_df)
 
-    st.sidebar.success(
-        f"Loaded {num_esas} ESAs from {num_unique_substations} substations"
-    )
-
-    # Show selected license areas info
-    if selected_license_areas:
-        st.sidebar.info(f"**Selected areas:** {', '.join(selected_license_areas)}")
+    # Show selected license area info
+    if len(selected_license_areas) > 1:
+        st.sidebar.info("**Showing all license areas**")
+    else:
+        st.sidebar.info(f"**Selected area:** {selected_license_areas[0]}")
 
     # Convert coordinates
     with st.spinner("Converting coordinates..."):
-        # Groupby secondary_substation_id and get number of rows
-        metadata_df["number_of_feeders"] = metadata_df.groupby(
-            "secondary_substation_id"
-        )["secondary_substation_id"].transform("count")
+        locations_df = process_esa_metadata(metadata_df)
 
-        # Create display dataframe with unique substations
-        df = metadata_df.drop_duplicates(
-            subset=["esa_location_eastings", "esa_location_northings"]
-        )
-
-        df[["latitude", "longitude"]] = df.apply(
-            lambda row: pd.Series(
-                convert_coords_to_latlon(
-                    row["esa_location_eastings"], row["esa_location_northings"]
-                )
-            ),
-            axis=1,
-        )
+    st.sidebar.success(f"Loaded {len(locations_df)} substations")
 
     # Create two-column layout
     col1, col2 = st.columns([1, 1])
@@ -103,31 +94,9 @@ if not metadata_df.empty:
         st.subheader("UK Substation Locations")
         st.write("Click on a substation to view smart meter data")
 
-        # Create map centered on UK
-        m = folium.Map(
-            location=[54.5, -2.0],  # Center of UK
-            zoom_start=6,
-            tiles="OpenStreetMap",
-        )
-
-        # Add markers for each substation
-        for idx, row in df.iterrows():
-            folium.CircleMarker(
-                location=[row["latitude"], row["longitude"]],
-                radius=4,
-                popup=folium.Popup(
-                    f"""<b>{row["secondary_substation_name"]}</b><br>
-                    Secondary Substation ID: {row["secondary_substation_id"]}<br>
-                    DNO: {row["dno_name"]}<br>
-                    License Area: {row["license_area_name"]}<br>
-                    Number of Feeders: {row["number_of_feeders"]}""",
-                    max_width=300,
-                ),
-                tooltip=row["secondary_substation_name"],
-                color="blue",
-                fill=True,
-                fillOpacity=0.7,
-            ).add_to(m)
+        # Create map with color coding based on selection
+        show_all_areas = len(selected_license_areas) > 1
+        m = create_substation_map(locations_df, show_all_areas=show_all_areas)
 
         # Display map and capture click data
         map_data = st_folium(m, width=700, height=600)
@@ -135,14 +104,23 @@ if not metadata_df.empty:
     with col2:
         st.subheader("Smart Meter Data")
 
+        # Initialize session state for tracking clicks and caching data
+        if "last_clicked_substation" not in st.session_state:
+            st.session_state.last_clicked_substation = None
+        if "last_date_range" not in st.session_state:
+            st.session_state.last_date_range = None
+        if "cached_smart_meter_data" not in st.session_state:
+            st.session_state.cached_smart_meter_data = None
+
         # Check if a marker was clicked
         if map_data and map_data.get("last_object_clicked"):
             clicked_lat = map_data["last_object_clicked"]["lat"]
             clicked_lon = map_data["last_object_clicked"]["lng"]
 
             # Find the clicked substation
-            clicked_substation = df[
-                (df["latitude"] == clicked_lat) & (df["longitude"] == clicked_lon)
+            clicked_substation = locations_df[
+                (locations_df["latitude"] == clicked_lat)
+                & (locations_df["longitude"] == clicked_lon)
             ]
 
             if not clicked_substation.empty:
@@ -177,21 +155,43 @@ if not metadata_df.empty:
                 # Convert dates to datetime strings
                 start_datetime = f"{start_date.strftime('%Y-%m-%d')}T00:00:00+00:00"
                 end_datetime = f"{end_date.strftime('%Y-%m-%d')}T23:59:59+00:00"
+                current_date_range = (start_datetime, end_datetime)
 
-                # Fetch smart meter data for all ESAs
-                with st.spinner("Fetching smart meter data..."):
-                    all_data = []
-                    for _, esa_row in substation_esas.iterrows():
-                        esa_id = esa_row["esa_id"]
-                        lv_feeder_id = esa_row["lv_feeder_id"]
+                # Check if we need to fetch new data
+                need_to_fetch = (
+                    st.session_state.last_clicked_substation != substation_id
+                    or st.session_state.last_date_range != current_date_range
+                )
 
-                        df_smart = fetch_smart_meter_data(
-                            API_KEY, esa_id, start_datetime, end_datetime
+                if need_to_fetch:
+                    # Fetch smart meter data for all ESAs
+                    with st.spinner("Fetching smart meter data..."):
+                        all_data = []
+                        for _, esa_row in substation_esas.iterrows():
+                            esa_id = esa_row["esa_id"]
+                            lv_feeder_id = esa_row["lv_feeder_id"]
+
+                            df_smart = fetch_smart_meter_data(
+                                API_KEY, esa_id, start_datetime, end_datetime
+                            )
+
+                            if not df_smart.empty:
+                                df_smart["lv_feeder_id"] = lv_feeder_id
+                                all_data.append(df_smart)
+
+                        # Cache the result
+                        st.session_state.last_clicked_substation = substation_id
+                        st.session_state.last_date_range = current_date_range
+                        st.session_state.cached_smart_meter_data = (
+                            all_data,
+                            substation_name,
                         )
 
-                        if not df_smart.empty:
-                            df_smart["lv_feeder_id"] = lv_feeder_id
-                            all_data.append(df_smart)
+                # Use cached data
+                if st.session_state.cached_smart_meter_data:
+                    all_data, cached_substation_name = (
+                        st.session_state.cached_smart_meter_data
+                    )
 
                     if all_data:
                         combined_data = pd.concat(all_data, ignore_index=True)
@@ -201,28 +201,10 @@ if not metadata_df.empty:
                             combined_data["data_timestamp"]
                         )
 
-                        # Create the plot
-                        fig = px.line(
-                            combined_data,
-                            x="data_timestamp",
-                            y="active_total_consumption_import",
-                            color="lv_feeder_id",
-                            title=f"Smart Meter Values for Substation: {substation_name}",
-                            labels={
-                                "data_timestamp": "Timestamp",
-                                "active_total_consumption_import": "Active Total Consumption Import (Wh)",
-                                "lv_feeder_id": "LV Feeder ID",
-                            },
-                            height=500,
+                        # Create and display the plot
+                        fig = create_smart_meter_plot(
+                            combined_data, cached_substation_name
                         )
-
-                        fig.update_layout(
-                            xaxis_title="Timestamp",
-                            yaxis_title="Active Total Consumption Import (Wh)",
-                            legend_title="LV Feeder ID",
-                            hovermode="x unified",
-                        )
-
                         st.plotly_chart(fig, use_container_width=True)
 
                     else:
