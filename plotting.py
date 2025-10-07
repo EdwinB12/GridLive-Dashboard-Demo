@@ -151,6 +151,12 @@ def create_smart_meter_plot(
     Returns:
         plotly.graph_objects.Figure
     """
+    # Remove any values over 10 million (likely data errors)
+    combined_data = combined_data[combined_data[y_column] <= 10_000_000].copy()
+
+    # Sort data by timestamp
+    combined_data = combined_data.sort_values(by="data_timestamp")
+
     # Create readable label from column name
     y_label = y_column.replace("_", " ").title()
 

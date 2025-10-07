@@ -213,7 +213,8 @@ if not metadata_df.empty:
                         if available_columns:
                             default_column = (
                                 "active_total_consumption_import"
-                                if "active_total_consumption_import" in available_columns
+                                if "active_total_consumption_import"
+                                in available_columns
                                 else available_columns[0]
                             )
                             selected_column = st.selectbox(
