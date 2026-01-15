@@ -135,7 +135,7 @@ else:
         "Search Radius (meters)",
         min_value=0,
         max_value=100000,
-        value=10000,
+        value=5000,
         step=1000,
         help="Radius in meters to search around the clicked point (max 100,000m)",
     )
