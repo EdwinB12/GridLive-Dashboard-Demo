@@ -229,7 +229,10 @@ def calculate_zoom_level(radius: int, map_height: int = 600) -> int:
 
 
 def create_map_with_radius_circle(
-    center_lat: float, center_lon: float, radius: int, locations_df: pd.DataFrame = None
+    center_lat: float,
+    center_lon: float,
+    radius: int,
+    locations_df: pd.DataFrame = None,
 ) -> folium.Map:
     """
     Create a map centered on a location with a radius circle and optional substation markers.
@@ -304,7 +307,7 @@ def create_map_with_radius_circle(
             ).add_to(m)
 
         # Add colorbar for feeders
-        colorbar_html = f'''
+        colorbar_html = f"""
         <div style="position: fixed;
                     bottom: 50px; left: 50px; width: 150px;
                     background-color: white; z-index:9999; font-size:11px;
@@ -319,7 +322,7 @@ def create_map_with_radius_circle(
             <span>{int(max_feeders)}</span>
         </div>
         </div>
-        '''
+        """
         m.get_root().html.add_child(folium.Element(colorbar_html))
 
     return m
@@ -378,10 +381,11 @@ def create_smart_meter_plot(
     # Add horizontal dashed red line at max value for active_total_consumption_import
     if y_column == "active_total_consumption_import" and max_value is not None:
         fig.add_hline(
-            y=max_value,
+            # Add an max line 2000W above the max value and call it 'headroom'
+            y=max_value + 2000,
             line_dash="dash",
             line_color="red",
-            annotation_text=f"Max: {max_value:.2f} Wh",
+            annotation_text=f"Headroom: {max_value + 2000:.2f} Wh",
             annotation_position="top",
         )
 
