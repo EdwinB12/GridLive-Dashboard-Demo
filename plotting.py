@@ -233,6 +233,7 @@ def create_map_with_radius_circle(
     center_lon: float,
     radius: int,
     locations_df: pd.DataFrame = None,
+    zoom_override: int = None,
 ) -> folium.Map:
     """
     Create a map centered on a location with a radius circle and optional substation markers.
@@ -253,7 +254,7 @@ def create_map_with_radius_circle(
     # Create map centered on the clicked location
     m = folium.Map(
         location=[center_lat, center_lon],
-        zoom_start=zoom_level,
+        zoom_start=zoom_override if zoom_override is not None else zoom_level,
         tiles="OpenStreetMap",
     )
 
@@ -328,6 +329,65 @@ def create_map_with_radius_circle(
     return m
 
 
+def create_substation_aggregate_plot(
+    aggregate_data: pd.DataFrame,
+    substation_name: str,
+    y_column: str = "active_total_consumption_import",
+    total_customers: int = 20_000,
+    label: str = "Estimated Substation Demand",
+) -> px.line:
+    """
+    Create a plotly line plot for an aggregated substation demand curve.
+
+    Args:
+        aggregate_data: DataFrame with data_timestamp and the demand column
+        substation_name: Name of the substation for the title
+        y_column: Column to plot
+        total_customers: The customer scaling constant used (for display)
+
+    Returns:
+        plotly.graph_objects.Figure
+    """
+    aggregate_data = aggregate_data.sort_values("data_timestamp")
+
+    y_label = y_column.replace("_", " ").title()
+    if y_column.endswith("import"):
+        y_label += " (Wh)"
+
+    title = f"{label}: {substation_name}"
+    max_value = aggregate_data[y_column].max() if not aggregate_data.empty else None
+    if max_value is not None:
+        title += f"<br><sub>Max: {max_value:,.0f} Wh | Scaled to {total_customers:,} customers</sub>"
+
+    fig = px.line(
+        aggregate_data,
+        x="data_timestamp",
+        y=y_column,
+        title=title,
+        labels={"data_timestamp": "Timestamp", y_column: y_label},
+        height=500,
+    )
+
+    if y_column == "active_total_consumption_import" and max_value is not None:
+        headroom = max_value + 2000
+        fig.add_hline(
+            y=headroom,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Headroom: {headroom:,.0f} Wh",
+            annotation_position="top",
+        )
+
+    fig.update_layout(
+        xaxis_title="Timestamp",
+        yaxis_title=y_label,
+        hovermode="x unified",
+        showlegend=False,
+    )
+
+    return fig
+
+
 def create_smart_meter_plot(
     combined_data: pd.DataFrame,
     substation_name: str,
@@ -357,37 +417,25 @@ def create_smart_meter_plot(
     if y_column.endswith("import"):
         y_label += " (Wh)"
 
-    # Calculate max value for active_total_consumption_import
-    max_value = None
     title = f"Smart Meter Values for Substation: {substation_name}"
-    if y_column == "active_total_consumption_import":
-        max_value = combined_data[y_column].max()
-        title += f"<br><sub>Maximum Consumption: {max_value:.2f} Wh</sub>"
+
+    hover_data = {"active_device_count": True} if "active_device_count" in combined_data.columns else {}
 
     fig = px.line(
         combined_data,
         x="data_timestamp",
         y=y_column,
         color="lv_feeder_id",
+        hover_data=hover_data,
         title=title,
         labels={
             "data_timestamp": "Timestamp",
             y_column: y_label,
             "lv_feeder_id": "LV Feeder ID",
+            "active_device_count": "Active Devices",
         },
         height=500,
     )
-
-    # Add horizontal dashed red line at max value for active_total_consumption_import
-    if y_column == "active_total_consumption_import" and max_value is not None:
-        fig.add_hline(
-            # Add an max line 2000W above the max value and call it 'headroom'
-            y=max_value + 2000,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"Headroom: {max_value + 2000:.2f} Wh",
-            annotation_position="top",
-        )
 
     fig.update_layout(
         xaxis_title="Timestamp",

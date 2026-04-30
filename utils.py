@@ -8,7 +8,6 @@ import pandas as pd
 import geopandas as gpd
 from pyproj import Transformer
 from datetime import datetime, timedelta
-import time
 from OSGridConverter import latlong2grid
 
 
@@ -36,6 +35,7 @@ def fetch_license_areas():
     """
     url = f"{BASE_URL}/license_area"
     try:
+        print(f"GET {url}")
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
@@ -71,6 +71,7 @@ def fetch_esa_metadata(limit=None, license_areas=None):
                 params["limit"] = limit
 
             try:
+                print(f"GET {url} params={params}")
                 response = requests.get(url, params=params)
                 response.raise_for_status()
                 data = response.json()
@@ -90,6 +91,7 @@ def fetch_esa_metadata(limit=None, license_areas=None):
             params["limit"] = limit
 
         try:
+            print(f"GET {url} params={params}")
             response = requests.get(url, params=params)
             response.raise_for_status()
             data = response.json()
@@ -147,6 +149,7 @@ def fetch_smart_meter_data(api_key, esa_id, start_datetime=None, end_datetime=No
     params = {"start_datetime": start_datetime, "end_datetime": end_datetime}
 
     try:
+        print(f"GET {url} params={params}")
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         data = response.json()
@@ -275,13 +278,25 @@ def fetch_esa_metadata_near(grid_reference, radius=10000, limit=None):
 
 
 def process_esa_metadata(metadata_df: pd.DataFrame) -> pd.DataFrame:
-    # Groupby secondary_substation_id and get number of rows
-    metadata_df["number_of_feeders"] = metadata_df.groupby("secondary_substation_id")[
-        "secondary_substation_id"
+    metadata_df = metadata_df.copy()
+
+    # SSEN has a bug where secondary_substation_id is not unique per substation;
+    # use name as the grouping key for SSEN rows instead.
+    metadata_df["substation_key"] = metadata_df.apply(
+        lambda r: (
+            r["secondary_substation_name"]
+            if r["dno_name"] == "SSEN"
+            else str(r["secondary_substation_id"])
+        ),
+        axis=1,
+    )
+
+    metadata_df["number_of_feeders"] = metadata_df.groupby("substation_key")[
+        "substation_key"
     ].transform("count")
 
     # Create display dataframe with unique substations
-    locations_df = metadata_df.drop_duplicates(subset=["secondary_substation_id"])
+    locations_df = metadata_df.drop_duplicates(subset=["substation_key"])
 
     # Use geopandas for efficient coordinate conversion from EPSG:27700 to EPSG:4326
     gdf = gpd.GeoDataFrame(
@@ -316,6 +331,78 @@ def latlon_to_grid_reference(lat: float, lon: float) -> str:
     return grid
 
 
+TOTAL_SECONDARY_CUSTOMERS = 2_000
+
+
+def smooth_timeseries(
+    df: pd.DataFrame,
+    y_column: str,
+    window: int = 5,
+) -> pd.DataFrame:
+    """
+    Apply a centred rolling mean to a time series.
+    window=48 corresponds to 24 hours at 30-min resolution.
+    """
+    df = df.copy().sort_values("data_timestamp")
+    df[y_column] = df[y_column].rolling(window=window, center=True, min_periods=1).mean()
+    return df
+
+
+def calculate_substation_aggregate(
+    all_data: list,
+    y_column: str = "active_total_consumption_import",
+    total_customers: int = TOTAL_SECONDARY_CUSTOMERS,
+) -> pd.DataFrame:
+    """
+    Calculate an aggregated substation demand curve.
+
+    For each LV feeder: divide demand by active_device_count at each timestamp.
+    Sum all normalised feeders at each timestamp.
+    Multiply by total_customers.
+    """
+    feeder_series = []
+
+    for df in all_data:
+        if (
+            df.empty
+            or y_column not in df.columns
+            or "active_device_count" not in df.columns
+        ):
+            continue
+
+        feeder_df = df[["data_timestamp", y_column, "active_device_count"]].copy()
+        feeder_df["active_device_count"] = pd.to_numeric(
+            feeder_df["active_device_count"], errors="coerce"
+        )
+        feeder_df[y_column] = pd.to_numeric(feeder_df[y_column], errors="coerce")
+        feeder_df = feeder_df[feeder_df["active_device_count"] >= 1].dropna(
+            subset=["active_device_count", y_column]
+        )
+        feeder_df = feeder_df[feeder_df[y_column] <= 1_000_000]
+        if feeder_df.empty:
+            continue
+        feeder_series.append(feeder_df)
+
+    if not feeder_series:
+        return pd.DataFrame()
+
+    # Weighted average across feeders: sum demand and devices separately, then divide.
+    # This keeps the per-meter ratio stable when individual feeders have missing timestamps.
+    combined = pd.concat(feeder_series, ignore_index=True)
+    grouped = (
+        combined.groupby("data_timestamp")
+        .agg(
+            total_demand=(y_column, "sum"),
+            total_devices=("active_device_count", "sum"),
+        )
+        .reset_index()
+    )
+    grouped[y_column] = (
+        grouped["total_demand"] / grouped["total_devices"]
+    ) * total_customers
+    return grouped[["data_timestamp", y_column]]
+
+
 @st.cache_data(ttl=3600)
 def fetch_esa_metadata_near_grid(grid_reference: str, radius: int = 5000):
     """
@@ -332,6 +419,7 @@ def fetch_esa_metadata_near_grid(grid_reference: str, radius: int = 5000):
     params = {"radius": radius}
 
     try:
+        print(f"GET {url} params={params}")
         response = requests.get(url, params=params)
         response.raise_for_status()
         data = response.json()

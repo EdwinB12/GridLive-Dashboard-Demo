@@ -13,10 +13,13 @@ from utils import (
     fetch_smart_meter_data,
     process_esa_metadata,
     latlon_to_grid_reference,
+    calculate_substation_aggregate,
+    smooth_timeseries,
+    TOTAL_SECONDARY_CUSTOMERS,
 )
 
 # Import plotting functions
-from plotting import create_substation_map, create_smart_meter_plot, create_map_with_radius_circle
+from plotting import create_substation_map, create_smart_meter_plot, create_map_with_radius_circle, create_substation_aggregate_plot
 
 # Page configuration
 st.set_page_config(page_title="GridLive API Dashboard", page_icon="⚡", layout="wide")
@@ -149,6 +152,8 @@ if "map_click_location" not in st.session_state:
     st.session_state.map_click_location = None
 if "map_click_grid_ref" not in st.session_state:
     st.session_state.map_click_grid_ref = None
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "Substation Aggregate"
 
 # Fetch data based on mode
 metadata_df = pd.DataFrame()
@@ -293,19 +298,51 @@ if not metadata_df.empty and not locations_df.empty:
             ]
 
             if not clicked_substation.empty:
-                substation_id = clicked_substation.iloc[0]["secondary_substation_id"]
-                substation_name = clicked_substation.iloc[0][
-                    "secondary_substation_name"
-                ]
+                sub = clicked_substation.iloc[0]
+                substation_id = sub["secondary_substation_id"]
+                substation_name = sub["secondary_substation_name"]
+                substation_key = sub["substation_key"]
 
-                # Get all ESAs for this substation
-                substation_esas = metadata_df[
-                    metadata_df["secondary_substation_id"] == substation_id
-                ]
+                # Get all ESAs for this substation, using name for SSEN (id not unique)
+                if sub["dno_name"] == "SSEN":
+                    substation_esas = metadata_df[
+                        metadata_df["secondary_substation_name"] == substation_name
+                    ]
+                else:
+                    substation_esas = metadata_df[
+                        metadata_df["secondary_substation_id"] == substation_id
+                    ]
+                easting = sub["esa_location_eastings"]
+                northing = sub["esa_location_northings"]
+                lat = sub["latitude"]
+                lon = sub["longitude"]
 
-                st.write(
-                    f"**Selected Substation:** {substation_name} | **Substation ID:** {substation_id} | **Number of LV Feeders:** {len(substation_esas)}"
+                col_info, col_meta_dl = st.columns([3, 1])
+                with col_info:
+                    st.write(
+                        f"**Selected Substation:** {substation_name} | **Substation ID:** {substation_id} | **Number of LV Feeders:** {len(substation_esas)}"
+                    )
+                    st.write(
+                        f"**Location (BNG):** E {easting:,.0f}, N {northing:,.0f} | "
+                        f"**Location (WGS84):** {lat:.6f}°N, {lon:.6f}°E"
+                    )
+                with col_meta_dl:
+                    st.download_button(
+                        label="Download Metadata",
+                        data=substation_esas.to_csv(index=False),
+                        file_name=f"{substation_name}_metadata.csv",
+                        mime="text/csv",
+                    )
+
+                # View mode toggle
+                view_options = ["Substation Aggregate", "Modelled", "Individual Feeders"]
+                view_mode = st.radio(
+                    "View",
+                    options=view_options,
+                    index=view_options.index(st.session_state.view_mode) if st.session_state.view_mode in view_options else 0,
+                    horizontal=True,
                 )
+                st.session_state.view_mode = view_mode
 
                 # Date range selector
                 col_date1, col_date2 = st.columns(2)
@@ -327,7 +364,7 @@ if not metadata_df.empty and not locations_df.empty:
 
                 # Check if we need to fetch new data
                 need_to_fetch = (
-                    st.session_state.last_clicked_substation != substation_id
+                    st.session_state.last_clicked_substation != substation_key
                     or st.session_state.last_date_range != current_date_range
                 )
 
@@ -354,7 +391,7 @@ if not metadata_df.empty and not locations_df.empty:
                                 break
 
                         # Cache the result
-                        st.session_state.last_clicked_substation = substation_id
+                        st.session_state.last_clicked_substation = substation_key
                         st.session_state.last_date_range = current_date_range
                         st.session_state.cached_smart_meter_data = (
                             all_data,
@@ -375,7 +412,7 @@ if not metadata_df.empty and not locations_df.empty:
                             combined_data["data_timestamp"]
                         )
 
-                        # Get available columns for plotting (exclude esa_id and data_timestamp)
+                        # Get available columns for plotting (exclude metadata columns)
                         exclude_columns = ["esa_id", "data_timestamp", "lv_feeder_id"]
                         available_columns = [
                             col
@@ -383,12 +420,12 @@ if not metadata_df.empty and not locations_df.empty:
                             if col not in exclude_columns
                         ]
 
-                        # Column selector dropdown
-                        if available_columns:
+                        if not available_columns:
+                            st.warning("No plottable columns available in the data.")
+                        elif view_mode == "Substation Aggregate":
                             default_column = (
                                 "active_total_consumption_import"
-                                if "active_total_consumption_import"
-                                in available_columns
+                                if "active_total_consumption_import" in available_columns
                                 else available_columns[0]
                             )
                             selected_column = st.selectbox(
@@ -397,13 +434,95 @@ if not metadata_df.empty and not locations_df.empty:
                                 index=available_columns.index(default_column),
                             )
 
-                            # Create and display the plot
+                            aggregate_data = calculate_substation_aggregate(
+                                all_data, selected_column, TOTAL_SECONDARY_CUSTOMERS
+                            )
+
+                            if aggregate_data.empty:
+                                st.warning(
+                                    "Could not compute aggregate — `active_device_count` "
+                                    "not available in smart meter data."
+                                )
+                            else:
+                                aggregate_data["data_timestamp"] = pd.to_datetime(
+                                    aggregate_data["data_timestamp"]
+                                )
+                                fig = create_substation_aggregate_plot(
+                                    aggregate_data,
+                                    cached_substation_name,
+                                    selected_column,
+                                    TOTAL_SECONDARY_CUSTOMERS,
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=aggregate_data.to_csv(index=False),
+                                    file_name=f"{cached_substation_name}_aggregate_{selected_column}.csv",
+                                    mime="text/csv",
+                                )
+                        elif view_mode == "Modelled":
+                            default_column = (
+                                "active_total_consumption_import"
+                                if "active_total_consumption_import" in available_columns
+                                else available_columns[0]
+                            )
+                            selected_column = st.selectbox(
+                                "Select data to plot:",
+                                options=available_columns,
+                                index=available_columns.index(default_column),
+                            )
+
+                            aggregate_data = calculate_substation_aggregate(
+                                all_data, selected_column, TOTAL_SECONDARY_CUSTOMERS
+                            )
+
+                            if aggregate_data.empty:
+                                st.warning(
+                                    "Could not compute aggregate — `active_device_count` "
+                                    "not available in smart meter data."
+                                )
+                            else:
+                                aggregate_data["data_timestamp"] = pd.to_datetime(
+                                    aggregate_data["data_timestamp"]
+                                )
+                                modelled_data = smooth_timeseries(aggregate_data, selected_column)
+                                fig = create_substation_aggregate_plot(
+                                    modelled_data,
+                                    cached_substation_name,
+                                    selected_column,
+                                    TOTAL_SECONDARY_CUSTOMERS,
+                                    label="Modelled Substation Demand",
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=modelled_data.to_csv(index=False),
+                                    file_name=f"{cached_substation_name}_modelled_{selected_column}.csv",
+                                    mime="text/csv",
+                                )
+                        else:
+                            # Individual feeders view
+                            default_column = (
+                                "active_total_consumption_import"
+                                if "active_total_consumption_import" in available_columns
+                                else available_columns[0]
+                            )
+                            selected_column = st.selectbox(
+                                "Select data to plot:",
+                                options=available_columns,
+                                index=available_columns.index(default_column),
+                            )
+
                             fig = create_smart_meter_plot(
                                 combined_data, cached_substation_name, selected_column
                             )
                             st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.warning("No plottable columns available in the data.")
+                            st.download_button(
+                                label="Download CSV",
+                                data=combined_data.to_csv(index=False),
+                                file_name=f"{cached_substation_name}_feeders_{selected_column}.csv",
+                                mime="text/csv",
+                            )
 
                     else:
                         st.warning(
